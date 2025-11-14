@@ -1,6 +1,0 @@
-[tool.uv.workspace]
-members = [
-    "services/feature_extractor",
-    "services/preprocessor",
-    "services/classifier"
-]
