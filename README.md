@@ -55,6 +55,7 @@ There are three main data flows:
 
 ### Diagram
 
+```mermaid
 graph TD
     subgraph User
         Client
@@ -111,6 +112,7 @@ graph TD
     Graf -- Queries --> Prom
     
     %% (All services also push traces to Jaeger)
+```
 
 ### Service Directory
 
