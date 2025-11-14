@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # --- Prometheus Metrics ---
 MESSAGES_RECEIVED = Counter("classifier_messages_received_total", "Total messages received")
 MESSAGES_SENT_TOTAL = Counter("classifier_messages_sent_total", "Total Kafka messages sent", ["topic"])
-PREDICTIONS_TOTAL = Counter("classifier_predictions_total", "Total predictions made", ["class"])
+PREDICTIONS_TOTAL = Counter("classifier_predictions_total", "Total predictions made", ["prediction"])
 PROCESSING_LATENCY = Histogram("classifier_processing_latency_seconds", "Processing latency")
 
 
@@ -137,7 +137,7 @@ def run_classifier():
                 "prediction": prediction,
                 "confidence": round(confidence, 4), # Round to 4 decimal places
             }
-            PREDICTIONS_TOTAL.labels(class_=prediction).inc()
+            PREDICTIONS_TOTAL.labels(prediction=prediction).inc()
 
             # 4. Publish final status
             producer.send(TOPIC_STATUS_UPDATES, value={

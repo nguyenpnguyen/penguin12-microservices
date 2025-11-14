@@ -3,7 +3,6 @@ import uuid
 import json
 import logging
 import time
-import io  # For reading bytes as an image
 import hashlib  # For creating the cache key
 
 from contextlib import asynccontextmanager
@@ -11,12 +10,13 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaProducer
 from prometheus_client import start_http_server, Counter, Histogram
 
 # --- ML Imports ---
 import numpy as np
-from PIL import Image
+from preprocessing import preprocess_image
 
 # --- Configuration ---
 KAFKA_BROKER = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -50,15 +50,16 @@ async def lifespan(app: FastAPI):
     logger.info("Started Prometheus metrics server on port 9100")
 
     # Connect to Kafka
-    try:
-        kafka_producer = KafkaProducer(
-            bootstrap_servers=KAFKA_BROKER,
-            value_serializer=lambda v: json.dumps(v).encode('utf-8')
-        )
-        logger.info(f"Connected to Kafka at {KAFKA_BROKER}")
-    except Exception as e:
-        logger.error(f"Failed to connect to Kafka: {e}")
-        # Note: The app will fail API calls if this is not set
+    while kafka_producer is None:
+        try:
+            kafka_producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BROKER,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+            logger.info(f"Connected to Kafka at {KAFKA_BROKER}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Kafka, retrying in 5s: {e}")
+            time.sleep(5)
 
     # Load mean/std and store as numpy arrays
     try:
@@ -84,6 +85,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 # --- Helper Function ---
 def send_to_kafka(topic, value):
     try:
@@ -91,43 +100,6 @@ def send_to_kafka(topic, value):
         MESSAGES_SENT_TOTAL.labels(topic=topic).inc()
     except Exception as e:
         logger.error(f"Failed to send to Kafka topic {topic}: {e}")
-
-# --- Preprocessing Logic (Re-written with Numpy/Pillow) ---
-def preprocess_image(image_bytes: bytes) -> list:
-    """
-    Load and preprocess image bytes for inference using Pillow and Numpy.
-    This replicates:
-    - transforms.Resize((128, 128))
-    - transforms.ToTensor()
-    - transforms.Normalize(mean=mean, std=std)
-    - .unsqueeze(0)
-    """
-    global mean_np, std_np
-    if mean_np is None or std_np is None:
-        raise RuntimeError("Mean/Std arrays are not loaded")
-        
-    # 1. Load image from in-memory bytes
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    
-    # 2. Resize
-    image = image.resize((128, 128), Image.Resampling.LANCZOS)
-    
-    # 3. Replicate transforms.ToTensor()
-    # Convert to numpy array
-    image_np = np.array(image, dtype=np.float32)
-    # Scale from [0, 255] to [0.0, 1.0]
-    image_np = image_np / 255.0
-    # Change from (H, W, C) to (C, H, W)
-    image_np = np.transpose(image_np, (2, 0, 1))
-
-    # 4. Replicate transforms.Normalize()
-    image_np = (image_np - mean_np) / std_np
-    
-    # 5. Replicate .unsqueeze(0) to add batch dimension (B, C, H, W)
-    image_np = np.expand_dims(image_np, axis=0)
-    
-    # 6. Convert to list for JSON serialization
-    return image_np.tolist()
 
 # --- API Endpoint ---
 @app.post("/v1/infer")
