@@ -1,0 +1,11 @@
+[project]
+name = "classifier"
+version = "0.1.0"
+description = "Classifier microservice"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "kafka-python",
+    "prometheus-client",
+    "numpy", # For ML
+]

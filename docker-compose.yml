@@ -1,0 +1,124 @@
+services:
+  # 1. Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.4
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      # Exposes Kafka to your host machine for testing
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  redis:
+    image: redis:8.4-rc1-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  # 2. Observability (Monitoring)
+  prometheus:
+    image: prom/prometheus:main
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    ports:
+      - "6831:6831/udp" # Agent
+      - "16686:16686" # Web UI
+      - "14268:14268" # Collector
+
+  # 3. Application Services
+  preprocessor:
+    build:
+      context: ./services/preprocessor
+    container_name: preprocessor
+    ports:
+      - "8000:8000" # REST API port
+      - "9100:9100" # Prometheus metrics port
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_HOST=redis
+      - PROVENANCE_GRPC_HOST=provenance
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
+    depends_on:
+      - kafka
+    develop:
+      watch:
+        - action: sync
+          path: ./services/preprocessor/
+          target: /services/preprocessor/
+          initial_sync: true
+
+  provenance:
+    build:
+      context: ./services/provenance
+    container_name: provenance
+    ports:
+      - "8001:8000" # REST API port
+      - "50051:50051" # gRPC port
+      - "9101:9100" # Prometheus metrics port
+    environment:
+      - REDIS_HOST=redis
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
+    depends_on:
+      - kafka
+      - redis
+
+  feature_extractor:
+    build:
+      context: ./services/feature_extractor
+    container_name: feature_extractor
+    ports:
+      - "9102:9100" # Prometheus metrics port
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_HOST=redis
+      - PROVENANCE_GRPC_HOST=provenance
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
+    depends_on:
+      - kafka
+      - redis
+
+  classifier:
+    build:
+      context: ./services/classifier
+    container_name: classifier
+    ports:
+      - "9103:9100" # Prometheus metrics port
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - REDIS_HOST=redis
+      - PROVENANCE_GRPC_HOST=provenance
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
+    depends_on:
+      - kafka

@@ -1,0 +1,10 @@
+[project]
+name = "provenance"
+version = "0.1.0"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "kafka-python",
+    "prometheus-client",
+    "redis",
+]
