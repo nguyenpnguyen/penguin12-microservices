@@ -39,7 +39,7 @@ The system accepts an image, schedules it for analysis, and provides a non-block
 
 This project uses an event-driven microservice architecture. Services are split by function and communicate asynchronously using Kafka.
 
-### Data Flow Diagram
+### Data Flow
 
 There are three main data flows:
 
@@ -52,6 +52,65 @@ There are three main data flows:
     * All services send status updates (`PENDING`, `FAILED`, `COMPLETED`, etc.) to the `TOPIC_STATUS_UPDATES`.
     * The `provenance` service is the *only* consumer of this topic, updating its Redis DB.
     * The client `GET`s the `status_url`, which hits the `provenance` API.
+
+### Diagram
+
+graph TD
+    subgraph User
+        Client
+    end
+
+    subgraph "Application Services (The Pipeline)"
+        direction LR
+        Pre[Preprocessor (Port 8000)]
+        FE[Feature Extractor (Worker)]
+        Class[Classifier (Worker)]
+        Prov[Provenance (Port 8001)]
+    end
+
+    subgraph "Infrastructure (Messaging & Storage)"
+        direction LR
+        Zoo[(Zookeeper)]
+        Kafka[(Kafka Message Bus)]
+        Redis[(Redis: DB0 Status, DB1 Cache)]
+    end
+
+    subgraph "Observability Suite"
+        direction LR
+        Prom[Prometheus (Port 9090)]
+        Graf[Grafana (Port 3000)]
+        Jaeger[Jaeger (Port 16686)]
+    end
+    
+    %% 1. Main Data Flow
+    Client -- 1. POST /v1/infer (Image) --> Pre
+    Pre -- 2. Publishes (Preprocessed Tensor) --> Kafka
+    Kafka -- 3. Consumes (Tensor) --> FE
+    FE -- 4. Publishes (Embedding) --> Kafka
+    Kafka -- 5. Consumes (Embedding) --> Class
+
+    %% 2. Status & Polling Flow
+    Pre -- Publishes (PENDING) --> Kafka
+    FE -- Publishes (PROCESSING) --> Kafka
+    Class -- Publishes (COMPLETED / FAILED) --> Kafka
+    Kafka -- 6. Consumes ALL Statuses --> Prov
+    Client -- 7. GET /v1/status (Polling) --> Prov
+    
+    %% 3. Database & Cache
+    Prov -- Reads/Writes Status --> Redis
+    FE -- Reads/Writes Cache --> Redis
+    
+    %% 4. Infrastructure Management
+    Kafka -- Managed by --> Zoo
+    
+    %% 5. Observability Flow
+    Prom -- Scrapes /metrics --> Pre
+    Prom -- Scrapes /metrics --> FE
+    Prom -- Scrapes /metrics --> Class
+    Prom -- Scrapes /metrics --> Prov
+    Graf -- Queries --> Prom
+    
+    %% (All services also push traces to Jaeger)
 
 ### Service Directory
 
