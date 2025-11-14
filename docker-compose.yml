@@ -128,3 +128,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
     depends_on:
       - kafka
+    develop:
+      watch:
+        - action: sync
+          path: ./services/classifier/
+          target: /services/classifier/
+          initial_sync: true

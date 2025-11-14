@@ -7,5 +7,5 @@ requires-python = ">=3.12"
 dependencies = [
     "kafka-python",
     "prometheus-client",
-    "numpy", # For ML
+    "huggingface-hub",
 ]

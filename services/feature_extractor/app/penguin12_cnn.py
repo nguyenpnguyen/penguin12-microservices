@@ -18,9 +18,9 @@ class SEBlock(nn.Module):
         y = self.fc(y).view(b, c, 1, 1)              # excitation
         return x * y                                 # scale
 
-class Penguin12(nn.Module):
-    def __init__(self, image_size=128, num_classes=1):
-        super(Penguin12, self).__init__()
+class Penguin12CNN(nn.Module):
+    def __init__(self):
+        super(Penguin12CNN, self).__init__()
 
         def conv_block(in_channels, out_channels, kernel_size=3, dropout=0.3, use_se=False):
             padding = kernel_size // 2
@@ -53,15 +53,6 @@ class Penguin12(nn.Module):
         self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.global_max_pool = nn.AdaptiveMaxPool2d((1, 1))
 
-        # classifier (input doubled because GAP + GMP concat)
-        self.classifier = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(512 * 2, 256),  # concat -> 512*2
-            nn.SiLU(),
-            nn.Dropout(0.5),
-            nn.Linear(256, num_classes),
-        )
-
     def forward(self, x):
         x = self.features(x)
 
@@ -70,5 +61,4 @@ class Penguin12(nn.Module):
         x_max = self.global_max_pool(x)
         x = torch.cat([x_avg, x_max], dim=1)
 
-        x = self.classifier(x)
         return x

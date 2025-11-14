@@ -3,6 +3,7 @@ import json
 import logging
 import time
 
+from penguin12_cnn import Penguin12CNN
 from kafka import KafkaConsumer, KafkaProducer
 import redis
 from prometheus_client import start_http_server, Counter, Histogram
@@ -12,7 +13,6 @@ from prometheus_client import start_http_server, Counter, Histogram
 import torch
 
 # Model import
-from penguin12_net import Penguin12
 
 # --- Configuration ---
 KAFKA_BROKER = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -21,7 +21,7 @@ TOPIC_PREPROCESSED = os.environ.get("TOPIC_PREPROCESSED", "TOPIC_PREPROCESSED")
 TOPIC_FEATURES = os.environ.get("TOPIC_FEATURES", "TOPIC_FEATURES")
 TOPIC_STATUS_UPDATES = os.environ.get("TOPIC_STATUS_UPDATES", "TOPIC_STATUS_UPDATES")
 CONSUMER_GROUP = "feature-extractors"
-MODEL_PATH = "models/penguin12_2108.pt"
+MODEL_PATH = "models/backbone_weights.pt"
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,17 +42,23 @@ def load_model():
     logger.info(f"Loading feature extractor model from {MODEL_PATH}")
     logger.info(f"Using device: {DEVICE}")
 
-    model = Penguin12()
+    model = Penguin12CNN()
     
     # Load the state dictionary (weights)
     # Use map_location to ensure it loads correctly onto the selected device
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+    state_dict =torch.load(MODEL_PATH, map_location=DEVICE)
+
+    # load the weights directly into the 'features' submodule
+    try:
+        model.features.load_state_dict(state_dict)
+    except RuntimeError as e:
+        logger.error(f"Error loading state_dict into model.features: {e}")
+        logger.error("This likely means the keys in your .pt file don't match the 'features' nn.Sequential block.")
+        raise e
     
     # Move model to the device (CPU or GPU)
     model.to(DEVICE)
     
-    # --- CRITICAL: Set model to evaluation mode ---
-    # This disables dropout, batch norm updates, etc.
     model.eval()
     
     logger.info("Model loaded and set to eval mode.")
