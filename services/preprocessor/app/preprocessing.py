@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 import io
 
-def preprocess_image(image_bytes: bytes) -> list:
+def preprocess_image(image_bytes: bytes, mean_np: float, std_np: float) -> list:
     """
     Load and preprocess image bytes for inference using Pillow and Numpy.
     This replicates:
@@ -11,10 +11,6 @@ def preprocess_image(image_bytes: bytes) -> list:
     - transforms.Normalize(mean=mean, std=std)
     - .unsqueeze(0)
     """
-    global mean_np, std_np
-    if mean_np is None or std_np is None:
-        raise RuntimeError("Mean/Std arrays are not loaded")
-        
     # 1. Load image from in-memory bytes
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     

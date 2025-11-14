@@ -124,7 +124,7 @@ async def infer(request: Request, file: UploadFile = File(...)):
         cache_key = hashlib.md5(image_bytes).hexdigest()
         
         # 3. Run preprocessing
-        processed_image_tensor_list = preprocess_image(image_bytes)
+        processed_image_tensor_list = preprocess_image(image_bytes, mean_np, std_np)
 
         # 4. Create Kafka messages
         status_message = {
