@@ -1,15 +1,27 @@
 global:
-  scrape_interval: 15s
+  scrape_interval: 15s # How often to scrape
+
 scrape_configs:
-  - job_name: 'preprocessor'
+  - job_name: "prometheus"
+    # Scrape prometheus itself
     static_configs:
-      - targets: ['preprocessor:9100']
-  - job_name: 'provenance'
+      - targets: ["localhost:9090"]
+
+  - job_name: "preprocessor"
+    # 'preprocessor' is the container name
+    # 9100 is the port we opened for metrics
     static_configs:
-      - targets: ['provenance:9100']
-  - job_name: 'feature_extractor'
+      - targets: ["preprocessor:9100"]
+
+  - job_name: "feature_extractor"
     static_configs:
-      - targets: ['feature_extractor:9100']
-  - job_name: 'classifier'
+      - targets: ["feature_extractor:9100"]
+
+  - job_name: "classifier"
     static_configs:
-      - targets: ['classifier:9100']
+      - targets: ["classifier:9100"]
+
+  - job_name: "provenance"
+    static_configs:
+      - targets: ["provenance:9100"]
+

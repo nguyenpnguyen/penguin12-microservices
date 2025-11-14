@@ -68,7 +68,6 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - REDIS_HOST=redis
-      - PROVENANCE_GRPC_HOST=provenance
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
     depends_on:
       - kafka
@@ -85,14 +84,20 @@ services:
     container_name: provenance
     ports:
       - "8001:8000" # REST API port
-      - "50051:50051" # gRPC port
       - "9101:9100" # Prometheus metrics port
     environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - REDIS_HOST=redis
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
     depends_on:
       - kafka
       - redis
+    develop:
+      watch:
+        - action: sync
+          path: ./services/provenance/
+          target: /services/provenance/
+          initial_sync: true
 
   feature_extractor:
     build:
@@ -103,7 +108,6 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - REDIS_HOST=redis
-      - PROVENANCE_GRPC_HOST=provenance
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
     depends_on:
       - kafka
@@ -124,7 +128,6 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - REDIS_HOST=redis
-      - PROVENANCE_GRPC_HOST=provenance
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:14268/v1/traces
     depends_on:
       - kafka
