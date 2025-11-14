@@ -58,60 +58,58 @@ There are three main data flows:
 ```mermaid
 graph TD
     subgraph User
-        Client
+        Client["Browser Extension"]
     end
-
+    
     subgraph "Application Services (The Pipeline)"
         direction LR
-        Pre[Preprocessor (Port 8000)]
-        FE[Feature Extractor (Worker)]
-        Class[Classifier (Worker)]
-        Prov[Provenance (Port 8001)]
+        Pre["Preprocessor (Port 8000)"]
+        FE["Feature Extractor (Worker)"]
+        Class["Classifier (Worker)"]
+        Prov["Provenance (Port 8001)"]
     end
 
     subgraph "Infrastructure (Messaging & Storage)"
         direction LR
-        Zoo[(Zookeeper)]
-        Kafka[(Kafka Message Bus)]
-        Redis[(Redis: DB0 Status, DB1 Cache)]
+        Zoo[("Zookeeper")]
+        Kafka[("Kafka Message Bus")]
+        Redis[("Redis: DB0 Status, DB1 Cache")]
     end
 
     subgraph "Observability Suite"
         direction LR
-        Prom[Prometheus (Port 9090)]
-        Graf[Grafana (Port 3000)]
-        Jaeger[Jaeger (Port 16686)]
+        Prom["Prometheus (Port 9090)"]
+        Graf["Grafana (Port 3000)"]
+        Jaeger["Jaeger (Port 16686)"]
     end
     
     %% 1. Main Data Flow
-    Client -- 1. POST /v1/infer (Image) --> Pre
-    Pre -- 2. Publishes (Preprocessed Tensor) --> Kafka
-    Kafka -- 3. Consumes (Tensor) --> FE
-    FE -- 4. Publishes (Embedding) --> Kafka
-    Kafka -- 5. Consumes (Embedding) --> Class
+    Client -- "1. POST /v1/infer (Image)" --> Pre
+    Pre -- "2. Publishes (Preprocessed Tensor)" --> Kafka
+    Kafka -- "3. Consumes (Tensor)" --> FE
+    FE -- "4. Publishes (Embedding)" --> Kafka
+    Kafka -- "5. Consumes (Embedding)" --> Class
 
     %% 2. Status & Polling Flow
-    Pre -- Publishes (PENDING) --> Kafka
-    FE -- Publishes (PROCESSING) --> Kafka
-    Class -- Publishes (COMPLETED / FAILED) --> Kafka
-    Kafka -- 6. Consumes ALL Statuses --> Prov
-    Client -- 7. GET /v1/status (Polling) --> Prov
+    Pre -- "Publishes (PENDING)" --> Kafka
+    FE -- "Publishes (PROCESSING)" --> Kafka
+    Class -- "Publishes (COMPLETED / FAILED)" --> Kafka
+    Kafka -- "6. Consumes ALL Statuses" --> Prov
+    Client -- "7. GET /v1/status (Polling)" --> Prov
     
     %% 3. Database & Cache
-    Prov -- Reads/Writes Status --> Redis
-    FE -- Reads/Writes Cache --> Redis
+    Prov -- "Reads/Writes Status" --> Redis
+    FE -- "Reads/Writes Cache" --> Redis
     
     %% 4. Infrastructure Management
-    Kafka -- Managed by --> Zoo
+    Kafka -- "Managed by" --> Zoo
     
     %% 5. Observability Flow
-    Prom -- Scrapes /metrics --> Pre
-    Prom -- Scrapes /metrics --> FE
-    Prom -- Scrapes /metrics --> Class
-    Prom -- Scrapes /metrics --> Prov
-    Graf -- Queries --> Prom
-    
-    %% (All services also push traces to Jaeger)
+    Prom -- "Scrapes /metrics" --> Pre
+    Prom -- "Scrapes /metrics" --> FE
+    Prom -- "Scrapes /metrics" --> Class
+    Prom -- "Scrapes /metrics" --> Prov
+    Graf -- "Queries" --> Prom
 ```
 
 ### Service Directory
