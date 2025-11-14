@@ -9,4 +9,6 @@ dependencies = [
     "numpy>=2.3.0",
     "redis",
     "prometheus-client",
+    "torch",
+    "huggingface-hub"
 ]

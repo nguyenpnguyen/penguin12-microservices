@@ -7,8 +7,7 @@ RUN pip install --no-cache-dir .
 
 # Download the model config into a specific config directory
 # This runs as part of the image build
-RUN hf download nguyenpn/Penguin-12 mean_std.json \
-    --local-dir /app/config
+RUN hf download nguyenpn/Penguin-12 mean_std.json --local-dir /app/config
 
 COPY ./app .
 

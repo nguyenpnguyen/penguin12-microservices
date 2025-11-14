@@ -1,206 +1,184 @@
 import os
-import time
 import json
-import asyncio
-from typing import Tuple
+import logging
+import time
 
-import numpy as np
-import grpc
-from fastapi import FastAPI
-import uvicorn
-from kafka import KafkaProducer
-
-# OpenTelemetry imports
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
-
-# Proto imports: ensure you've generated these from protos/embedding.proto
-# See README.md for generation command.
-try:
-    from protos import embedding_pb2, embedding_pb2_grpc
-except Exception:
-    # Fallback import error message - generated stubs must exist
-    embedding_pb2 = None
-    embedding_pb2_grpc = None
-
-# OTEL setup (simple)
-JAEGER_HOST = os.environ.get("JAEGER_HOST", "jaeger")
-KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "redpanda:9092")
-MODEL_VERSION = os.environ.get("FE_MODEL_VERSION", "fe_v0")
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1"))
-
-# minimal OpenTelemetry initialization (also in otel.py if you prefer)
-provider = TracerProvider()
-otlp_exporter = OTLPSpanExporter(endpoint=f"http://{JAEGER_HOST}:4317", insecure=True)
-provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-trace.set_tracer_provider(provider)
-tracer = trace.get_tracer(__name__)
-
-# Kafka producer (JSON for now). For protobuf, serialize to bytes.
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_BOOTSTRAP,
-    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-)
-
-app = FastAPI(title="feature-extractor")
-FastAPIInstrumentor.instrument_app(app)
-# Instrument gRPC server later (in Grpc server startup)
-grpc_instrumentor = GrpcInstrumentorServer()
-grpc_instrumentor.instrument()
+from kafka import KafkaConsumer, KafkaProducer
+import redis
+from prometheus_client import start_http_server, Counter, Histogram
 
 
-def make_traceparent_from_current_span() -> Tuple[str, bytes]:
-    """
-    Build an RFC W3C traceparent header string from current span context.
-    Return tuple (header_str, header_bytes) - Kafka headers need bytes.
-    Format: "00-{traceid}-{spanid}-01"
-    """
-    span = trace.get_current_span()
-    ctx = span.get_span_context()
-    # If there's no valid span, return empty
-    if not ctx or not ctx.trace_id:
-        return "", b""
-    trace_id = format(ctx.trace_id, "032x")
-    span_id = format(ctx.span_id, "016x")
-    traceparent = f"00-{trace_id}-{span_id}-01"
-    return traceparent, traceparent.encode("utf-8")
+# --- ML Imports ---
+import torch
+
+# Model import
+from penguin12_net import Penguin12
+
+# --- Configuration ---
+KAFKA_BROKER = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+TOPIC_PREPROCESSED = os.environ.get("TOPIC_PREPROCESSED", "TOPIC_PREPROCESSED")
+TOPIC_FEATURES = os.environ.get("TOPIC_FEATURES", "TOPIC_FEATURES")
+TOPIC_STATUS_UPDATES = os.environ.get("TOPIC_STATUS_UPDATES", "TOPIC_STATUS_UPDATES")
+CONSUMER_GROUP = "feature-extractors"
+MODEL_PATH = "models/penguin12_2108.pt"
 
 
-# --- Embedding generation logic (placeholder) ---
-def compute_embedding(image_bytes: bytes) -> list:
-    """Placeholder: compute random embedding. Replace with real model."""
-    # deterministic pseudo-random for reproducibility if needed
-    rng = np.random.default_rng(int(time.time() * 1000) % (2 ** 32))
-    emb = (rng.standard_normal(512)).astype(float).tolist()
-    return emb
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# --- Setup ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- gRPC servicer implementation ---
-if embedding_pb2 is not None and embedding_pb2_grpc is not None:
-    class FeatureExtractorServicer(embedding_pb2_grpc.FeatureExtractorServiceServicer):
-        async def Extract(self, request, context):
-            """
-            gRPC handler for Extract(ImageRequest) -> EmbeddingResponse
-            request: embedding_pb2.ImageRequest
-            """
-            request_id = getattr(request, "request_id", "req-none")
-            # start traced span
-            with tracer.start_as_current_span("feature_extractor.extract") as span:
-                span.set_attribute("request.id", request_id)
-                span.set_attribute("model.version", MODEL_VERSION)
+# --- Prometheus Metrics ---
+MESSAGES_RECEIVED = Counter("feature_extractor_messages_received_total", "Total messages received")
+MESSAGES_SENT_TOTAL = Counter("feature_extractor_messages_sent_total", "Total Kafka messages sent", ["topic"])
+CACHE_HITS = Counter("feature_extractor_cache_hits_total", "Total cache hits")
+CACHE_MISSES = Counter("feature_extractor_cache_misses_total", "Total cache misses")
+PROCESSING_LATENCY = Histogram("feature_extractor_processing_latency_seconds", "Processing latency")
 
-                # In real code, handle request.image_bytes or reference
-                image_bytes = request.image_bytes if hasattr(request, "image_bytes") else b""
-                embedding = compute_embedding(image_bytes)
-                embed_id = f"embed-{int(time.time()*1000)}"
+# --- Model Loading ---
+def load_model():
+    logger.info(f"Loading feature extractor model from {MODEL_PATH}")
+    logger.info(f"Using device: {DEVICE}")
 
-                event = {
-                    "request_id": request_id,
-                    "image_id": getattr(request, "image_id", ""),
-                    "embedding": embedding,
-                    "model_version": MODEL_VERSION,
-                    "timestamp": int(time.time() * 1000),
-                }
+    model = Penguin12()
+    
+    # Load the state dictionary (weights)
+    # Use map_location to ensure it loads correctly onto the selected device
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+    
+    # Move model to the device (CPU or GPU)
+    model.to(DEVICE)
+    
+    # --- CRITICAL: Set model to evaluation mode ---
+    # This disables dropout, batch norm updates, etc.
+    model.eval()
+    
+    logger.info("Model loaded and set to eval mode.")
+    return model
 
-                # inject traceparent header into kafka message headers
-                traceparent_str, traceparent_bytes = make_traceparent_from_current_span()
-                headers = []
-                if traceparent_str:
-                    headers.append(("traceparent", traceparent_bytes))
+# --- Main Worker Loop ---
+def run_feature_extractor():
+    logger.info("Starting Feature Extractor service...")
+    start_http_server(9100)
+    logger.info("Started Prometheus metrics server on port 9100")
 
-                # publish to Kafka 'embeddings' topic
-                producer.send("embeddings", value=event, headers=headers)
-                producer.flush()
+    model = load_model()
 
-                # build response proto
-                resp = embedding_pb2.EmbeddingResponse(
-                    request_id=request_id, image_id=event["image_id"], embed_id=embed_id
-                )
-                return resp
-else:
-    FeatureExtractorServicer = None
+    # --- Setup connections with retry logic ---
+    consumer = None
+    producer = None
+    redis_cache = None
 
+    while consumer is None:
+        try:
+            consumer = KafkaConsumer(
+                TOPIC_PREPROCESSED,
+                bootstrap_servers=KAFKA_BROKER,
+                group_id=CONSUMER_GROUP,
+                value_deserializer=lambda v: json.loads(v.decode('utf-8'))
+            )
+            logger.info("Kafka consumer connected.")
+        except Exception as e:
+            logger.error(f"Failed to connect Kafka consumer, retrying in 5s: {e}")
+            time.sleep(5)
 
-# --- gRPC server runner ---
-async def serve_grpc(host="0.0.0.0", port=50052):
-    if FeatureExtractorServicer is None:
-        print("Proto stubs not found. gRPC server will not start. Generate protos first.")
-        return
+    while producer is None:
+        try:
+            producer = KafkaProducer(
+                bootstrap_servers=KAFKA_BROKER,
+                value_serializer=lambda v: json.dumps(v).encode('utf-8')
+            )
+            logger.info("Kafka producer connected.")
+        except Exception as e:
+            logger.error(f"Failed to connect Kafka producer, retrying in 5s: {e}")
+            time.sleep(5)
 
-    server = grpc.aio.server()
-    embedding_pb2_grpc.add_FeatureExtractorServiceServicer_to_server(FeatureExtractorServicer(), server)
-    listen_addr = f"{host}:{port}"
-    server.add_insecure_port(listen_addr)
-    print(f"[gRPC] starting server on {listen_addr}")
-    await server.start()
-    await server.wait_for_termination()
+    while redis_cache is None:
+        try:
+            redis_cache = redis.Redis(host=REDIS_HOST, port=6379, db=1)
+            redis_cache.ping() # Test connection
+            logger.info(f"Connected to Redis at {REDIS_HOST}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis, retrying in 5s: {e}")
+            time.sleep(5)
 
+    logger.info("Feature Extractor service started. Waiting for messages...")
 
-# --- FastAPI endpoints (health / debug) ---
-@app.get("/health")
-async def health():
-    return {"status": "ok", "service": "feature_extractor", "model_version": MODEL_VERSION}
+    for message in consumer:
+        start_time = time.time()
+        MESSAGES_RECEIVED.inc()
+        
+        data = message.value
+        request_id = data.get("request_id")
+        
+        if not request_id:
+            logger.warning("Message received without request_id")
+            continue
+            
+        logger.info(f"Processing request {request_id}")
 
+        try:
+            # 1. Update status to PROCESSING
+            producer.send(TOPIC_STATUS_UPDATES, value={
+                "request_id": request_id,
+                "status": "PROCESSING_FEATURES"
+            })
+            MESSAGES_SENT_TOTAL.labels(topic=TOPIC_STATUS_UPDATES).inc()
 
-@app.post("/admin/generate_test_embedding")
-async def admin_gen(request: dict):
-    """
-    Synchronous test endpoint to generate embedding and publish to kafka.
-    Body: { "request_id": "...", "image_id": "..." }
-    """
-    request_id = request.get("request_id", f"req-{int(time.time()*1000)}")
-    image_id = request.get("image_id", f"img-{int(time.time()*1000)}")
-    with tracer.start_as_current_span("feature_extractor.admin_generate"):
-        emb = compute_embedding(b"")
-        event = {
-            "request_id": request_id,
-            "image_id": image_id,
-            "embedding": emb,
-            "model_version": MODEL_VERSION,
-            "timestamp": int(time.time() * 1000),
-        }
-        traceparent_str, traceparent_bytes = make_traceparent_from_current_span()
-        headers = []
-        if traceparent_str:
-            headers.append(("traceparent", traceparent_bytes))
-        producer.send("embeddings", value=event, headers=headers)
-        producer.flush()
-        return {"published": True, "request_id": request_id, "image_id": image_id}
+            # 2. Check cache
+            cache_key = data.get("cache_key")
+            redis_key = f"cache:{cache_key}"
+            embedding_json = redis_cache.get(redis_key)
+            
+            if embedding_json:
+                embedding = json.loads(embedding_json)
+                CACHE_HITS.inc()
+                logger.info(f"Cache hit for request {request_id}")
+            else:
+                CACHE_MISSES.inc()
+                logger.info(f"Cache miss for request {request_id}, running inference...")
+                
+                # 3. Get preprocessed data and run model
+                image_tensor_list = data["image_tensor_list"]
+                
+                # --- Convert list back to tensor ---
+                image_tensor = torch.tensor(image_tensor_list).to(DEVICE)
+                
+                # --- Run Inference ---
+                with torch.no_grad(): # Disable gradient calculation
+                    embedding_tensor = model(image_tensor)
+                
+                # --- Convert result back to list ---
+                embedding = embedding_tensor.cpu().numpy().flatten().tolist()
+                
+                # 4. Store in cache (if we have a key)
+                if cache_key:
+                    redis_cache.set(redis_key, json.dumps(embedding), ex=86400) # 24-hour expiry
 
-
-# --- Entrypoint: run FastAPI and gRPC concurrently ---
-def start_uvicorn():
-    uvicorn.run(app, host="0.0.0.0", port=8002, log_level="info")
-
-
-def main():
-    loop = asyncio.get_event_loop()
-    # Run gRPC server in background task
-    if FeatureExtractorServicer is not None:
-        grpc_task = loop.create_task(serve_grpc(host="0.0.0.0", port=50052))
-    else:
-        grpc_task = None
-
-    # Run uvicorn in a thread to keep things simple
-    # uvicorn.run blocks, so run it in executor to keep asyncio loop alive
-    from concurrent.futures import ThreadPoolExecutor
-
-    executor = ThreadPoolExecutor(max_workers=1)
-    loop.run_in_executor(executor, start_uvicorn)
-
-    try:
-        loop.run_forever()
-    except KeyboardInterrupt:
-        print("Shutting down")
-    finally:
-        if grpc_task:
-            grpc_task.cancel()
-        producer.close()
-
+            # 5. Publish to next topic
+            output_message = {
+                "request_id": request_id,
+                "embedding": embedding
+            }
+            producer.send(TOPIC_FEATURES, value=output_message)
+            MESSAGES_SENT_TOTAL.labels(topic=TOPIC_FEATURES).inc()
+            
+            producer.flush()
+            PROCESSING_LATENCY.observe(time.time() - start_time)
+            logger.info(f"Successfully processed request {request_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to process request {request_id}: {e}")
+            # Send FAILED status
+            producer.send(TOPIC_STATUS_UPDATES, value={
+                "request_id": request_id,
+                "status": "FAILED",
+                "error": str(e)
+            })
+            MESSAGES_SENT_TOTAL.labels(topic=TOPIC_STATUS_UPDATES).inc()
+            producer.flush()
 
 if __name__ == "__main__":
-    main()
+    run_feature_extractor()

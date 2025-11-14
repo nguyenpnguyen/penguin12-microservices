@@ -5,6 +5,8 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
+RUN hf download nguyenpn/Penguin-12 penguin12_2108.pt --local-dir /app/models
+
 COPY ./app .
 
 EXPOSE 9100
